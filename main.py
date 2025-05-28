@@ -23,6 +23,7 @@ def init_db():
         hwid TEXT UNIQUE,
         expiry DATE,
         active INTEGER DEFAULT 1,
+        extended INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -56,10 +57,10 @@ class HWIDRequest(BaseModel):
 def get_keys():
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
-    c.execute("SELECT key, hwid, expiry, active FROM license_keys")
+    c.execute("SELECT key, hwid, expiry, active, extended FROM license_keys")
     keys = c.fetchall()
     conn.close()
-    return [{"key": k, "hwid": h, "expiry": e, "active": bool(a)} for k, h, e, a in keys]
+    return [{"key": k, "hwid": h, "expiry": e, "active": bool(a), "extended": bool(ext)} for k, h, e, a, ext in keys]
 
 @app.post("/generate")
 def generate_keys(data: KeyGenRequest):
@@ -69,7 +70,7 @@ def generate_keys(data: KeyGenRequest):
     expiry_date = None if data.days == 0 else (datetime.now() + timedelta(days=data.days)).strftime("%Y-%m-%d")
     for _ in range(data.count):
         new_key = str(uuid.uuid4())
-        c.execute("INSERT INTO license_keys (key, hwid, expiry, active) VALUES (?, NULL, ?, 1)", (new_key, expiry_date))
+        c.execute("INSERT INTO license_keys (key, hwid, expiry, active, extended) VALUES (?, NULL, ?, 1, 0)", (new_key, expiry_date))
         new_keys.append(new_key)
     conn.commit()
     conn.close()
@@ -169,7 +170,10 @@ def extend_key(data: KeyExtendRequest):
     else:
         new_expiry = datetime.now() + timedelta(days=data.days)
 
-    c.execute("UPDATE license_keys SET expiry = ? WHERE key = ?", (new_expiry.strftime("%Y-%m-%d"), data.key))
+    c.execute(
+        "UPDATE license_keys SET expiry = ?, extended = 1 WHERE key = ?",
+        (new_expiry.strftime("%Y-%m-%d"), data.key)
+    )
     conn.commit()
     conn.close()
     return {"status": "success", "message": f"Expiry extended to {new_expiry.date()}"}
@@ -182,12 +186,10 @@ def compensate_all(data: CompensateRequest):
     all_keys = c.fetchall()
 
     for key, expiry in all_keys:
-        if expiry:
+        if expiry:  # Skip infinite keys
             new_expiry = datetime.strptime(expiry, "%Y-%m-%d") + timedelta(days=data.days)
-        else:
-            new_expiry = datetime.now() + timedelta(days=data.days)
-        c.execute("UPDATE license_keys SET expiry = ? WHERE key = ?", (new_expiry.strftime("%Y-%m-%d"), key))
+            c.execute("UPDATE license_keys SET expiry = ? WHERE key = ?", (new_expiry.strftime("%Y-%m-%d"), key))
 
     conn.commit()
     conn.close()
-    return {"status": "success", "message": f"All keys extended by {data.days} days"}
+    return {"status": "success", "message": f"All eligible keys extended by {data.days} days"}
