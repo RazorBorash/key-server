@@ -31,19 +31,26 @@ def init_db():
 
 init_db()
 
-# Schemas
 class KeyGenRequest(BaseModel):
     count: int
-    days: int
+    days: int  # 0 = infinite
 
 class ValidateRequest(BaseModel):
     key: str
     hwid: str
 
+class KeyActionRequest(BaseModel):
+    key: str
+
+class KeyExtendRequest(BaseModel):
+    key: str
+    days: int
+
+class CompensateRequest(BaseModel):
+    days: int
+
 class HWIDRequest(BaseModel):
     hwid: str
-
-# Routes
 
 @app.get("/keys")
 def get_keys():
@@ -59,7 +66,7 @@ def generate_keys(data: KeyGenRequest):
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
     new_keys = []
-    expiry_date = (datetime.now() + timedelta(days=data.days)).strftime("%Y-%m-%d")
+    expiry_date = None if data.days == 0 else (datetime.now() + timedelta(days=data.days)).strftime("%Y-%m-%d")
     for _ in range(data.count):
         new_key = str(uuid.uuid4())
         c.execute("INSERT INTO license_keys (key, hwid, expiry, active) VALUES (?, NULL, ?, 1)", (new_key, expiry_date))
@@ -120,7 +127,7 @@ def auto_login(data: HWIDRequest):
         return {"status": "error", "message": "No key bound to this HWID"}
 
 @app.post("/disable")
-def disable_key(data: ValidateRequest):
+def disable_key(data: KeyActionRequest):
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
     c.execute("UPDATE license_keys SET active = 0 WHERE key = ?", (data.key,))
@@ -129,7 +136,7 @@ def disable_key(data: ValidateRequest):
     return {"status": "success", "message": "Key disabled"}
 
 @app.post("/enable")
-def enable_key(data: ValidateRequest):
+def enable_key(data: KeyActionRequest):
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
     c.execute("UPDATE license_keys SET active = 1 WHERE key = ?", (data.key,))
@@ -138,10 +145,49 @@ def enable_key(data: ValidateRequest):
     return {"status": "success", "message": "Key enabled"}
 
 @app.post("/delete")
-def delete_key(data: ValidateRequest):
+def delete_key(data: KeyActionRequest):
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
     c.execute("DELETE FROM license_keys WHERE key = ?", (data.key,))
     conn.commit()
     conn.close()
     return {"status": "success", "message": "Key deleted"}
+
+@app.post("/extend")
+def extend_key(data: KeyExtendRequest):
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+    c.execute("SELECT expiry FROM license_keys WHERE key = ?", (data.key,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return {"status": "error", "message": "Key not found"}
+
+    expiry = row[0]
+    if expiry:
+        new_expiry = datetime.strptime(expiry, "%Y-%m-%d") + timedelta(days=data.days)
+    else:
+        new_expiry = datetime.now() + timedelta(days=data.days)
+
+    c.execute("UPDATE license_keys SET expiry = ? WHERE key = ?", (new_expiry.strftime("%Y-%m-%d"), data.key))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"Expiry extended to {new_expiry.date()}"}
+
+@app.post("/compensate")
+def compensate_all(data: CompensateRequest):
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+    c.execute("SELECT key, expiry FROM license_keys WHERE active = 1")
+    all_keys = c.fetchall()
+
+    for key, expiry in all_keys:
+        if expiry:
+            new_expiry = datetime.strptime(expiry, "%Y-%m-%d") + timedelta(days=data.days)
+        else:
+            new_expiry = datetime.now() + timedelta(days=data.days)
+        c.execute("UPDATE license_keys SET expiry = ? WHERE key = ?", (new_expiry.strftime("%Y-%m-%d"), key))
+
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"All keys extended by {data.days} days"}
