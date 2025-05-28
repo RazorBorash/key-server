@@ -53,3 +53,39 @@ def generate_keys(data: KeyGenRequest):
     conn.commit()
     conn.close()
     return {"new_keys": new_keys}
+
+# Validation request schema
+class ValidateRequest(BaseModel):
+    key: str
+    hwid: str
+
+# Validate license key + HWID
+@app.post("/validate")
+def validate_key(data: ValidateRequest):
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+
+    # Check if key exists
+    c.execute("SELECT hwid FROM license_keys WHERE key = ?", (data.key,))
+    result = c.fetchone()
+    if not result:
+        conn.close()
+        return {"status": "error", "message": "Invalid key"}
+
+    stored_hwid = result[0]
+
+    # If no HWID bound, bind this one
+    if stored_hwid is None:
+        c.execute("UPDATE license_keys SET hwid = ? WHERE key = ?", (data.hwid, data.key))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "Key validated and HWID bound"}
+
+    # If HWID matches, success
+    if stored_hwid == data.hwid:
+        conn.close()
+        return {"status": "success", "message": "Key validated"}
+
+    # Otherwise, HWID mismatch
+    conn.close()
+    return {"status": "error", "message": "HWID does not match"}
